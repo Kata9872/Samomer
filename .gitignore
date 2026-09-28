@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local SQLite data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Documentation and report files (not part of the project)
+*.docx
+*.doc
+*.pdf
+Отчет*
+чек лист*
+Бизнес-гипотеза*
+
+# Editor and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+~$*

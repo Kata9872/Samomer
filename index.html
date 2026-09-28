@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Самомер — трекер личных показателей</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f8fafc; color: #0f172a; }
+    dialog { border: 0; border-radius: 1rem; width: min(90vw, 600px); padding: 24px; max-height: 88vh; overflow: auto; }
+    dialog::backdrop { background: #0f172a80; }
+    input, select { box-sizing: border-box; width: 100%; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; background: white; }
+    button { cursor: pointer; }
+    button:disabled { opacity: .5; cursor: wait; }
+    .primary { background: #0f766e; color: white; padding: 10px 18px; border-radius: 8px; }
+    .secondary { border: 1px solid #cbd5e1; padding: 10px 16px; border-radius: 8px; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main class="max-w-5xl mx-auto px-5 py-10">
+    <header class="flex flex-wrap justify-between items-center gap-5 mb-10">
+      <div><h1 class="text-3xl font-bold tracking-tight">Самомер</h1><p class="text-slate-500 mt-2">Ваши привычки, цели и личные показатели</p></div>
+      <button id="open-create" class="primary">Создать трекер</button>
+    </header>
+    <p id="notice" role="status" aria-live="polite" class="mb-5 rounded-lg p-4" hidden></p>
+    <section id="empty" class="text-center bg-white border border-slate-200 rounded-2xl p-12" hidden>
+      <p class="text-2xl font-semibold">Начните с одной цели</p>
+      <p class="text-slate-500 mt-3 mb-6">Создайте первый трекер, добавьте значение и увидьте свой прогресс.</p>
+      <button id="first-create" class="primary">Создать первый трекер</button>
+    </section>
+    <p id="loading" class="text-slate-500">Загрузка трекеров…</p>
+    <section id="cards" aria-label="Трекеры" class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5"></section>
+  </main>
+
+  <dialog id="create-modal" aria-labelledby="create-title" style="padding:24px">
+    <div class="flex justify-between items-center mb-6"><h2 id="create-title" class="text-xl font-bold">Создать трекер</h2><button type="button" data-close="create-modal" class="secondary" aria-label="Закрыть форму">✕</button></div>
+    <form id="create-form" class="grid gap-4">
+      <label>Название<input name="name" required maxlength="50" placeholder="Например, Вода"></label>
+      <label>Тип<select name="type"><option value="counter">Количество (counter)</option><option value="boolean">Выполнение (boolean)</option><option value="duration">Длительность (duration)</option><option value="numeric">Числовой показатель (numeric)</option><option value="scale">Оценка по шкале (scale)</option></select></label>
+      <label>Цель за выбранный период<input name="target_value" type="number" step="any" min="0.000000001" value="8" required></label>
+      <label>Единица измерения<input name="unit" maxlength="20" required placeholder="Например, стаканов"></label>
+      <label>Период<select name="period"><option value="daily">Ежедневно</option><option value="weekly">Еженедельно</option></select></label>
+      <p class="text-sm text-slate-500">Недельная цель — сумма с понедельника. Ежедневная цель выполнения равна 1. Для длительности удобно использовать минуты.</p>
+      <p id="create-error" role="alert" class="text-red-700" hidden></p>
+      <button id="create-submit" class="primary" type="submit">Создать</button>
+    </form>
+  </dialog>
+
+  <dialog id="stats-modal" aria-labelledby="stats-title" style="padding:24px">
+    <div class="flex justify-between items-center gap-3 mb-5"><h2 id="stats-title" class="text-xl font-bold"></h2><button data-close="stats-modal" class="secondary" aria-label="Закрыть статистику">✕</button></div>
+    <p id="stats-summary" class="mb-3"></p>
+    <p class="text-sm text-slate-500 mb-5">Значения суммируются за день. Пропущенные дни показаны как 0.</p>
+    <div class="relative h-56 mb-5"><canvas id="chart" role="img" aria-label="График суммы значений по дням"></canvas></div>
+    <p id="chart-error" class="text-red-700 mb-4" hidden>График не загрузился. Проверьте интернет и обновите страницу. История доступна ниже.</p>
+    <h3 class="font-semibold mb-2">История записей</h3>
+    <div class="overflow-auto max-h-60"><table class="w-full text-left"><thead><tr class="border-b"><th class="py-2">Дата</th><th>Значение</th></tr></thead><tbody id="history"></tbody></table></div>
+    <p id="no-history" class="text-slate-500" hidden>Пока нет записей. Добавьте первое значение на карточке.</p>
+  </dialog>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    const labels = {boolean: 'Выполнение', counter: 'Количество', duration: 'Длительность', numeric: 'Число', scale: 'Шкала'};
+    const fmt = value => new Intl.NumberFormat('ru-RU', {maximumFractionDigits: 2}).format(value);
+    const escape = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;'}[char]));
+    let trackers = [];
+    let chart;
+
+    function message(id, text, error = true) {
+      $(id).textContent = text;
+      $(id).hidden = !text;
+      if (id === 'notice') $(id).className = `mb-5 rounded-lg p-4 ${error ? 'bg-red-50 text-red-700' : 'bg-teal-50 text-teal-800'}`;
+    }
+
+    async function api(path, data) {
+      let response;
+      try {
+        response = await fetch(`/api${path}`, {
+          method: data ? 'POST' : 'GET',
+          headers: {'Content-Type': 'application/json'},
+          ...(data ? {body: JSON.stringify(data)} : {}),
+          signal: AbortSignal.timeout(15000)
+        });
+      } catch (error) {
+        throw new Error('Не удалось связаться с сервером. Проверьте, что приложение запущено, и повторите попытку.');
+      }
+      const body = await response.json();
+      if (!response.ok) {
+        const detail = body.detail;
+        throw new Error(Array.isArray(detail) ? 'Проверьте поля: ' + detail.map(item => `${item.loc.at(-1)} — ${item.msg}`).join('; ') : detail || 'Ошибка сервера. Повторите попытку.');
+      }
+      return body;
+    }
+
+    async function busy(button, action, errorId = 'notice') {
+      if (button.disabled) return;
+      button.disabled = true;
+      message(errorId, '');
+      try { await action(); }
+      catch (error) { message(errorId, error.message); }
+      finally { button.disabled = false; }
+    }
+
+    function card(tracker) {
+      const t = tracker;
+      const quick = t.type === 'boolean' || t.type === 'counter';
+      return `<article data-id="${t.id}" class="bg-white border border-slate-200 rounded-2xl p-5 flex flex-col gap-4">
+        <div><p class="text-xs uppercase tracking-wide text-slate-500 mb-2">${labels[t.type]} · ${t.period === 'daily' ? 'День' : 'Неделя'}</p><h2 class="font-bold text-xl break-words">${escape(t.name)}</h2></div>
+        <p>${t.period === 'daily' ? 'Сегодня' : 'Эта неделя'}: <strong>${fmt(t.current_value)}</strong> / ${fmt(t.target_value)} ${escape(t.unit)}</p>
+        <div><div role="progressbar" aria-label="Выполнение цели" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${t.completion_percent}" class="h-2 rounded-full bg-slate-100 overflow-hidden"><div class="h-full bg-teal-600" style="width:${t.completion_percent}%"></div></div><p class="text-sm text-slate-500 mt-2">${fmt(t.completion_percent)}% выполнено</p></div>
+        ${quick ? `<button class="primary add-quick" data-value="1">${t.type === 'boolean' ? 'Выполнено' : '+1'}</button>` : `<form class="log-form flex flex-col gap-2"><label class="text-sm">Добавить, ${escape(t.unit)}<input name="value" aria-label="Значение для ${escape(t.name)}" type="number" step="any" ${t.type === 'numeric' ? '' : 'min="0"'} required placeholder="${t.type === 'duration' ? '30' : t.type === 'scale' ? '8' : '7.5'}"></label><button class="primary" type="submit">Добавить</button></form>`}
+        <button class="secondary open-stats mt-auto">Статистика</button>
+      </article>`;
+    }
+
+    async function refresh() {
+      trackers = await api('/trackers');
+      $('cards').innerHTML = trackers.map(card).join('');
+      $('empty').hidden = trackers.length > 0;
+      $('loading').hidden = true;
+    }
+
+    function openCreate() {
+      message('create-error', '');
+      $('create-modal').showModal();
+    }
+    $('open-create').onclick = openCreate;
+    $('first-create').onclick = openCreate;
+    document.querySelectorAll('[data-close]').forEach(button => button.onclick = () => $(button.dataset.close).close());
+    $('create-form').elements.type.onchange = () => {
+      const form = $('create-form');
+      if (form.elements.type.value === 'boolean') { form.elements.target_value.value = 1; form.elements.unit.value = 'раз'; }
+      if (form.elements.type.value === 'duration') { form.elements.target_value.value = 30; form.elements.unit.value = 'минут'; }
+    };
+    $('create-form').onsubmit = event => {
+      event.preventDefault();
+      busy($('create-submit'), async () => {
+        const data = Object.fromEntries(new FormData(event.target));
+        data.target_value = Number(data.target_value);
+        await api('/trackers', data);
+        $('create-modal').close();
+        event.target.reset();
+        message('notice', 'Трекер создан.', false);
+        try { await refresh(); }
+        catch (error) { message('notice', 'Трекер сохранён, но список не обновился. Обновите страницу.'); }
+      }, 'create-error');
+    };
+
+    async function addLog(id, value) {
+      const now = new Date();
+      const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      await api('/logs', {tracker_id: id, value, date: localDate});
+      try { await refresh(); }
+      catch (error) { throw new Error('Значение сохранено, но карточка не обновилась. Обновите страницу перед следующим вводом.'); }
+    }
+
+    $('cards').addEventListener('click', event => {
+      const button = event.target.closest('button');
+      if (!button) return;
+      const id = Number(button.closest('article').dataset.id);
+      if (button.classList.contains('add-quick')) busy(button, () => addLog(id, Number(button.dataset.value)));
+      if (button.classList.contains('open-stats')) busy(button, () => openStats(id));
+    });
+    $('cards').addEventListener('submit', event => {
+      event.preventDefault();
+      busy(event.target.querySelector('button'), () => addLog(Number(event.target.closest('article').dataset.id), Number(new FormData(event.target).get('value'))));
+    });
+
+    async function openStats(id) {
+      const tracker = trackers.find(t => t.id === id);
+      const stats = await api(`/trackers/${id}/stats`);
+      $('stats-title').textContent = tracker.name;
+      $('stats-summary').textContent = `Выполнение: ${fmt(stats.completion_percent)}% · ${stats.streak === null ? 'Для недельной цели серия не рассчитывается' : `Серия: ${stats.streak} дн.`}`;
+      $('history').innerHTML = stats.history.map(row => `<tr class="border-b border-slate-100"><td class="py-2">${escape(row.date)}</td><td>${fmt(row.value)} ${escape(tracker.unit)}</td></tr>`).join('');
+      $('no-history').hidden = stats.history.length > 0;
+      $('stats-modal').showModal();
+      if (chart) { chart.destroy(); chart = null; }
+      $('chart-error').hidden = typeof Chart !== 'undefined';
+      if (typeof Chart === 'undefined') return;
+      const points = [];
+      const values = new Map(stats.chart.map(row => [row.date, row.value]));
+      if (stats.chart.length) {
+        const cursor = new Date(stats.chart[0].date + 'T00:00:00Z');
+        const end = new Date(stats.chart.at(-1).date + 'T00:00:00Z');
+        while (cursor <= end) {
+          const day = cursor.toISOString().slice(0, 10);
+          points.push({date: day, value: values.get(day) || 0});
+          cursor.setUTCDate(cursor.getUTCDate() + 1);
+        }
+      }
+      chart = new Chart($('chart'), {
+        type: 'line',
+        data: {labels: points.map(row => row.date), datasets: [{label: tracker.unit, data: points.map(row => row.value), borderColor: '#0f766e', backgroundColor: '#ccfbf1', fill: true, tension: .15}]},
+        options: {responsive: true, maintainAspectRatio: false, scales: {x: {title: {display: true, text: 'Дата'}}, y: {beginAtZero: true, title: {display: true, text: tracker.unit}}}, plugins: {legend: {display: false}}}
+      });
+    }
+    refresh().catch(error => { $('loading').hidden = true; message('notice', error.message); });
+  </script>
+</body>
+</html>
