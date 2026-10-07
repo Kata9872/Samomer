@@ -1,6 +1,7 @@
 from collections import defaultdict
 from datetime import date, timedelta
 from pathlib import Path
+import sys
 
 from sqlalchemy import event
 from sqlalchemy.exc import SQLAlchemyError
@@ -15,7 +16,11 @@ class DataError(Exception):
 
 class Store:
     def __init__(self, db_path=None):
-        path = Path(db_path) if db_path else Path(__file__).resolve().parent / "trackall.db"
+        if db_path is not None:
+            path = Path(db_path)
+        else:
+            app_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+            path = app_dir / "trackall.db"
         self.engine = create_engine("sqlite:///" + path.resolve().as_posix())
 
         @event.listens_for(self.engine, "connect")

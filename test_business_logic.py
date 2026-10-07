@@ -4,6 +4,8 @@ import unittest
 from contextlib import closing
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
+import sys
 
 from pydantic import ValidationError
 
@@ -102,6 +104,14 @@ class StoreTests(unittest.TestCase):
         broken.write_bytes(b"not a SQLite database")
         with self.assertRaises(DataError):
             Store(broken)
+
+    def test_frozen_database_is_next_to_executable(self):
+        exe = Path(self.folder.name) / "Samomer.exe"
+        with patch.object(sys, "frozen", True, create=True), patch.object(sys, "executable", str(exe)):
+            frozen_store = Store()
+            self.assertEqual(len(frozen_store.get_trackers()), 0)
+            frozen_store.engine.dispose()
+        self.assertTrue((exe.parent / "trackall.db").exists())
 
 
 if __name__ == "__main__":

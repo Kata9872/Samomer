@@ -1,2 +1,4 @@
 sqlmodel
+sqlalchemy<2.1
 matplotlib
+pyinstaller
